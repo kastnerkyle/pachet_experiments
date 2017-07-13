@@ -57,8 +57,19 @@ class Trie(object):
         return [c for c in current.keys() if c != self._end]
 
 
+class Node(object):
+    def __init__(self, level, proposed_note, log_prob, previous_notes):
+        self.level = level
+        self.proposed_note = proposed_note
+        self.previous_notes = previous_notes
+        self.log_prob = log_prob
+
+    def __repr__(self):
+        return str((self.level, self.proposed_note, self.log_prob, self.previous_notes))
+
+
 class MaxOrder(object):
-    def __init__(self, max_order, ptype="avg"):
+    def __init__(self, max_order, ptype="max"):
         self.bad = Trie()
         self.max_order = max_order
         self.order = max_order - 1
@@ -93,9 +104,52 @@ class MaxOrder(object):
         d = {k: float(v) / s for k, v in d.items()}
         return d
 
-    def generate(self, seed_list, length, random_state):
+    def branch(self, seed_list, length):
         if len(seed_list) != self.order:
             raise ValueError("item {} has invalid length {} for seed, only {} supported".format(seed_list, len(seed_list), self.order))
+        res = [s for s in seed_list]
+
+        options = self.partial(res[-self.order:])
+
+        el = []
+        def push(i, p=None):
+            el.append(i)
+
+        def pop():
+            return el.pop()
+
+        for k, v in options.items():
+            n = Node(0, k, np.log(v), tuple(res))
+            push(n)
+
+        soln = {}
+        break_while = False
+        while len(el) > 0 and break_while is False:
+            current = pop()
+            index = current.level
+            cur_note = current.proposed_note
+            cur_seq = current.previous_notes
+            cur_log_prob = current.log_prob
+            new_seq = cur_seq + (cur_note,)
+            if index > length:
+                if cur_seq not in soln:
+                    # soln: log_prob
+                    soln[cur_seq] = cur_log_prob
+            else:
+                options = self.partial(new_seq[-self.order:])
+                for k, v in options.items():
+                    n = Node(index + 1, k, cur_log_prob + np.log(v), new_seq)
+                    push(n)
+
+        res = sorted([(v, k) for k, v in soln.items()])[::-1]
+        if len(res) == 0:
+            res = [(-1000, [s for s in seed_list])]
+        return res
+
+    def constrained_greedy(self, seed_list, length, random_state):
+        if len(seed_list) != self.order:
+            raise ValueError("item {} has invalid length {} for seed, only {} supported".format(seed_list, len(seed_list), self.order))
+
         res = [s for s in seed_list]
         for i in range(length):
             nxt = m.partial(res[-self.order:])
@@ -173,25 +227,37 @@ for n, b in pairs:
 pairs = zip(names, new_bars)
 
 random_state = np.random.RandomState(1999)
-max_order = 8
+max_order = 5
+rrange = 5
 
 m = MaxOrder(max_order)
 for p in pairs:
     m.insert(p[1])
 
 r = []
-for p in pairs:
-    ri = m.generate(p[1][:max_order - 1], 20, random_state)
-    r.append(ri)
+for n, p in enumerate(pairs):
+    print("Running pair {} of {}".format(n, len(pairs)))
+    part = p[1][:max_order - 1]
+
+    b = part
+    for i in range(rrange):
+        ri = m.branch(b[-(max_order - 1):], 4)
+        if len(ri) == 1:
+            break
+        part = ri[0][1]
+        b += part[-(max_order - 1):]
+    r.append(b)
+
 
 midi_p = []
 for ri in r:
-    rch = [realize_chord(rii, 4) for rii in ri]
+    rch = [realize_chord(rii, 3) for rii in ri]
     rt = []
     for rchi in rch:
         rt.append([rchi[idx].midi for idx in range(len(rchi))])
     midi_p.append(rt)
 
+# all half note
 midi_d = [[[2 for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
 
 midi_p = [np.array(midi_pi) for midi_pi in midi_p]
@@ -201,7 +267,7 @@ name_tag = "sample_{}.mid"
 pitches_and_durations_to_pretty_midi(midi_p, midi_d,
                                      save_dir="samples/samples",
                                      name_tag=name_tag,
-                                     default_quarter_length=90,
+                                     default_quarter_length=110,
                                      voice_params="piano")
 
 """
