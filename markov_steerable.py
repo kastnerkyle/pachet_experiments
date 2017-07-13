@@ -234,20 +234,13 @@ m = MaxOrder(max_order)
 for p in pairs:
     m.insert(p[1])
 
+# greedy example
 r = []
 for n, p in enumerate(pairs):
     print("Running pair {} of {}".format(n, len(pairs)))
     part = p[1][:max_order - 1]
-
-    b = part
-    for i in range(rrange):
-        ri = m.branch(b[-(max_order - 1):], 4)
-        if len(ri) == 1:
-            break
-        part = ri[0][1]
-        b += part[-(max_order - 1):]
-    r.append(b)
-
+    ri = m.constrained_greedy(part, int(4 * rrange), random_state)
+    r.append(ri)
 
 midi_p = []
 for ri in r:
@@ -263,44 +256,45 @@ midi_d = [[[2 for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in
 midi_p = [np.array(midi_pi) for midi_pi in midi_p]
 midi_d = [np.array(midi_di) for midi_di in midi_d]
 
-name_tag = "sample_{}.mid"
+name_tag = "sample_greedy_{}.mid"
 pitches_and_durations_to_pretty_midi(midi_p, midi_d,
                                      save_dir="samples/samples",
                                      name_tag=name_tag,
                                      default_quarter_length=110,
                                      voice_params="piano")
 
-"""
-#for rii in r[0]:
-#    print(rii)
-#    realize_chord(rii, 3)
+# branch example
+r = []
+for n, p in enumerate(pairs):
+    print("Running pair {} of {}".format(n, len(pairs)))
+    part = p[1][:max_order - 1]
 
-#for p in pairs:
-#    r = m.generate(p[1][:max_order - 1], 20, random_state)
-#    print(r)
+    b = part
+    for i in range(rrange):
+        ri = m.branch(b[-(max_order - 1):], 4)
+        if len(ri) == 1:
+            break
+        part = ri[0][1]
+        b += part[-(max_order - 1):]
+    r.append(b)
 
-#raise ValueError()
-#from IPython import embed; embed(); raise ValueError()
+midi_p = []
+for ri in r:
+    rch = [realize_chord(rii, 3) for rii in ri]
+    rt = []
+    for rchi in rch:
+        rt.append([rchi[idx].midi for idx in range(len(rchi))])
+    midi_p.append(rt)
 
-good_t = Trie()
-good_t.order_insert(4, pairs[0][1])
+# all half note
+midi_d = [[[2 for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
 
-bad_t = Trie()
-bad_t.order_insert(5, pairs[0][1])
-"""
+midi_p = [np.array(midi_pi) for midi_pi in midi_p]
+midi_d = [np.array(midi_di) for midi_di in midi_d]
 
-
-'''
-# basic tests
-test = Trie()
-test.insert('helloworld')
-test.insert('ilikeapple')
-test.insert('helloz')
-
-print(test.search('hello'))
-print(test.partial('hello'))
-print(test.search('ilikeapple'))
-print(test.partial('helloz'))
-print(test.partial('hellow'))
-raise ValueError()
-'''
+name_tag = "sample_branch_{}.mid"
+pitches_and_durations_to_pretty_midi(midi_p, midi_d,
+                                     save_dir="samples/samples",
+                                     name_tag=name_tag,
+                                     default_quarter_length=110,
+                                     voice_params="piano")
