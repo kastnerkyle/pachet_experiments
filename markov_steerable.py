@@ -229,6 +229,8 @@ pairs = zip(names, new_bars)
 random_state = np.random.RandomState(1999)
 max_order = 5
 rrange = 5
+dur = 2
+tempo = 110
 
 m = MaxOrder(max_order)
 for p in pairs:
@@ -237,7 +239,7 @@ for p in pairs:
 # greedy example
 r = []
 for n, p in enumerate(pairs):
-    print("Running pair {} of {}".format(n, len(pairs)))
+    print("Running greedy pair {} of {}".format(n, len(pairs)))
     part = p[1][:max_order - 1]
     ri = m.constrained_greedy(part, int(4 * rrange), random_state)
     r.append(ri)
@@ -251,7 +253,7 @@ for ri in r:
     midi_p.append(rt)
 
 # all half note
-midi_d = [[[2 for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
+midi_d = [[[dur for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
 
 midi_p = [np.array(midi_pi) for midi_pi in midi_p]
 midi_d = [np.array(midi_di) for midi_di in midi_d]
@@ -260,13 +262,13 @@ name_tag = "sample_greedy_{}.mid"
 pitches_and_durations_to_pretty_midi(midi_p, midi_d,
                                      save_dir="samples/samples",
                                      name_tag=name_tag,
-                                     default_quarter_length=110,
+                                     default_quarter_length=tempo,
                                      voice_params="piano")
 
 # branch example
 r = []
 for n, p in enumerate(pairs):
-    print("Running pair {} of {}".format(n, len(pairs)))
+    print("Running branch pair {} of {}".format(n, len(pairs)))
     part = p[1][:max_order - 1]
 
     b = part
@@ -287,7 +289,7 @@ for ri in r:
     midi_p.append(rt)
 
 # all half note
-midi_d = [[[2 for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
+midi_d = [[[dur for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
 
 midi_p = [np.array(midi_pi) for midi_pi in midi_p]
 midi_d = [np.array(midi_di) for midi_di in midi_d]
@@ -296,5 +298,5 @@ name_tag = "sample_branch_{}.mid"
 pitches_and_durations_to_pretty_midi(midi_p, midi_d,
                                      save_dir="samples/samples",
                                      name_tag=name_tag,
-                                     default_quarter_length=110,
+                                     default_quarter_length=tempo,
                                      voice_params="piano")
