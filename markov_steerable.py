@@ -26,7 +26,8 @@ class Trie(object):
         s = 0
         e = order
         while e < len(list_of_items):
-            e = s + order
+            # + 1 due to numpy slicing
+            e = s + order + 1
             self.insert(list_of_items[s:e])
             s += 1
 
@@ -68,35 +69,89 @@ class Node(object):
         return str((self.level, self.proposed_note, self.log_prob, self.previous_notes))
 
 
-class MaxOrder(object):
-    def __init__(self, max_order, ptype="max"):
-        self.bad = Trie()
+class CMP(object):
+    """ Constrained Markov Process
+
+    Implements tools/ideas from the following papers:
+
+    The Continuator: Musical Interaction with Style
+    F. Pachet
+    https://www.csl.sony.fr/downloads/papers/uploads/pachet-02f.pdf
+
+    Finite-Length Markov Processes With Constraints
+    F. Pachet, P. Roy, G. Barbieri
+    https://www.csl.sony.fr/downloads/papers/2011/pachet-11b.pdf
+
+    Markov Constraints: Steerable Generation of Markov Sequences
+    F. Pachet, P. Roy
+    https://www.csl.sony.fr/downloads/papers/2011/pachet-09c.pdf
+
+    Avoiding Plagiarism in Markov Sequence Generation
+    A. Papadopolous, P. Roy, F. Pachet
+    https://www.csl.sony.fr/downloads/papers/2014/papadopoulos-14a.pdf
+
+    Enforcing Meter in Finite-Length Markov Sequences
+    P. Roy, F. Pachet
+    https://www.csl.sony.fr/downloads/papers/2013/roy-13a.pdf
+
+    Non-Conformant Harmonization: The Real Book in the Style of Take 6
+    F. Pachet, P. Roy
+    https://www.csl.sony.fr/downloads/papers/2014/pachet-14a.pdf
+    """
+    def __init__(self, order, max_order=None, ptype="max", named_constraints={},
+                 verbose=False):
+
+        self.order = order
+        self.goods = [Trie() for i in range(0, self.order)]
         self.max_order = max_order
-        self.order = max_order - 1
-        self.goods = [Trie() for i in range(2, self.order)]
+        constraint_types = ["end", "start", "position", "alldiff"]
+        # need to flesh out API
+        # position is dict of dict of list
+        # alldiff key indicates window size
+        assert all([k in constraint_types for k in named_constraints.keys()])
+        self.named_constraints = named_constraints
+        self.bad = Trie()
         self.ptype = ptype
+        assert ptype in ["fixed", "max", "avg"]
+        self.verbose = verbose
 
     def insert(self, list_of_items):
-        self.bad.order_insert(self.max_order, list_of_items)
-        for i in list(range(2, self.order)):
-            self.goods[i - 2].order_insert(i, list_of_items)
+        if self.max_order is not None:
+            self.bad.order_insert(self.max_order, list_of_items)
+        for i in list(range(0, self.order)):
+            self.goods[i].order_insert(i + 1, list_of_items)
 
     def partial(self, prefix_list):
         # returns dict of item: prob
-        if len(prefix_list) != self.order:
-            raise ValueError("item {} has invalid length {} for partial search, only {} supported".format(prefix_list, len(prefix_list), self.order))
+        if len(prefix_list) >= self.order:
+            if self.verbose:
+                print("item {} has invalid length {} for partial search, using last {}".format(prefix_list, len(prefix_list), self.order))
+            partial_prefix_list = prefix_list[-self.order:]
+        else:
+            if len(prefix_list) < self.order:
+                raise ValueError("Prefix list for partial match too short")
+
+            #raise ValueError("item {} has invalid length {} for partial search, only {} supported".format(prefix_list, len(prefix_list), self.order))
         all_p = []
         all_gp = []
-        # smoothed probs for all chains
-        for i in list(range(2, self.order))[::-1]:
-            gp = self.goods[i - 2].partial(prefix_list[-i + 1:])
-            bp = self.bad.partial(prefix_list)
+        for i in list(range(0, self.order))[::-1]:
+            gp = self.goods[i].partial(partial_prefix_list[-(i + 1):])
+            # use old_prefix_list since that is the full data
+            if self.max_order is not None and len(prefix_list) > self.max_order:
+                bp = self.bad.partial(prefix_list[-self.max_order:])
+            else:
+                bp = []
             p = list(set(gp) - set(bp))
+            if self.ptype == "fixed":
+                all_p += p
+                all_gp += gp
+
             if len(p) > 0:
                 all_p += p
                 all_gp += gp
                 if self.ptype == "max":
                     break
+
         ps = list(set(all_p))
         gps = np.array(all_gp)
         d = {psi: sum(gps == psi) for psi in ps}
@@ -104,12 +159,35 @@ class MaxOrder(object):
         d = {k: float(v) / s for k, v in d.items()}
         return d
 
+    def check_constraint(self, node, sequence, depth_index, max_length):
+        generated = sequence[-(depth_index + 1):]
+        if "alldiff" in self.named_constraints:
+            # windowed alldiff?
+            if len(set(generated)) != len(generated):
+                return False
+
+        if "start" in self.named_constraints:
+            valid_start = self.named_constraints["start"]
+            if generated[0] not in valid_start:
+                return False
+
+        if "end" in self.named_constraints:
+            valid_end = self.named_constraints["end"]
+            if depth_index == (max_length - 1) and sequence[-1] not in valid_end:
+                return False
+
+        if "position" in self.named_constraints:
+            position_checks = self.named_constraints["position"]
+            for k, v in position_checks.items():
+                if len(generated) > k and generated[k] not in v:
+                    return False
+        return True
+
+
     def branch(self, seed_list, length):
-        if len(seed_list) != self.order:
-            raise ValueError("item {} has invalid length {} for seed, only {} supported".format(seed_list, len(seed_list), self.order))
         res = [s for s in seed_list]
 
-        options = self.partial(res[-self.order:])
+        options = self.partial(res)
 
         el = []
         def push(i, p=None):
@@ -131,28 +209,24 @@ class MaxOrder(object):
             cur_seq = current.previous_notes
             cur_log_prob = current.log_prob
             new_seq = cur_seq + (cur_note,)
-            if index > length:
+            if index >= length:
                 if cur_seq not in soln:
                     # soln: log_prob
                     soln[cur_seq] = cur_log_prob
             else:
-                options = self.partial(new_seq[-self.order:])
-                for k, v in options.items():
-                    n = Node(index + 1, k, cur_log_prob + np.log(v), new_seq)
-                    push(n)
+                if self.check_constraint(current, new_seq, index, length):
+                    options = self.partial(new_seq)
+                    for k, v in options.items():
+                        n = Node(index + 1, k, cur_log_prob + np.log(v), new_seq)
+                        push(n)
 
-        res = sorted([(v, k) for k, v in soln.items()])[::-1]
-        if len(res) == 0:
-            res = [(-1000, [s for s in seed_list])]
+        res = sorted([(v, k[len(seed_list):]) for k, v in soln.items()])[::-1]
         return res
 
     def constrained_greedy(self, seed_list, length, random_state):
-        if len(seed_list) != self.order:
-            raise ValueError("item {} has invalid length {} for seed, only {} supported".format(seed_list, len(seed_list), self.order))
-
         res = [s for s in seed_list]
         for i in range(length):
-            nxt = m.partial(res[-self.order:])
+            nxt = m.partial(res)
             if len(nxt) > 0:
                 r = sorted([(k, v) for k, v in nxt.items()])
                 el = [ri[0] for ri in r]
@@ -161,6 +235,7 @@ class MaxOrder(object):
             else:
                 return res
         return res
+
 
 def realize_chord(chordstring, numofpitch=3, baseoctave=4, direction="ascending"):
     """
@@ -210,6 +285,74 @@ def realize_chord(chordstring, numofpitch=3, baseoctave=4, direction="ascending"
         return result
 
 
+def render_chords(list_of_chord_lists, name_tag, dur=2, tempo=110, voices=4,
+                  voice_type="piano", save_dir="samples/samples"):
+        r = list_of_chord_lists
+        midi_p = []
+        for ri in r:
+            rch = [realize_chord(rii, voices) for rii in ri]
+            rt = []
+            for rchi in rch:
+                rt.append([rchi[idx].midi for idx in range(len(rchi))])
+            midi_p.append(rt)
+
+        midi_d = [[[dur for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
+
+        midi_p = [np.array(midi_pi) for midi_pi in midi_p]
+        midi_d = [np.array(midi_di) for midi_di in midi_d]
+
+        midi_pp = []
+        midi_dd = []
+        for p, d in zip(midi_p, midi_d):
+            w = np.where((p[:, 3] - p[:, 2]) > 12)[0]
+            p[w, 3] = 0.
+            midi_pp.append(p)
+            midi_dd.append(d)
+
+        pitches_and_durations_to_pretty_midi(midi_pp, midi_dd,
+                                             save_dir=save_dir,
+                                             name_tag=name_tag,
+                                             default_quarter_length=tempo,
+                                             voice_params=voice_type)
+
+def transpose(chord_seq):
+    roots = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+    roots2map = {k: v for v, k in enumerate(roots)}
+    # 2 octaves for easier transpose
+    oct_roots = roots + roots
+    map2roots = {k: v for k, v in enumerate(oct_roots)}
+
+    prototype = []
+    for c in chord_seq:
+        if c[:-1] in roots2map:
+            prototype.append(roots2map[c[:-1]])
+        elif c[:2] in roots2map:
+            prototype.append(roots2map[c[:2]])
+        elif c[0] in roots2map:
+            prototype.append(roots2map[c[0]])
+        else:
+            print(c)
+            from IPython import embed; embed(); raise ValueError()
+
+    chord_types = ["m", "7", "halfDim"]
+    chord_function = []
+    for c in chord_seq:
+        if "halfDim" in c:
+            chord_function.append("halfDim")
+            continue
+        elif c[-1] not in ["m", "7"]:
+            chord_function.append("")
+            continue
+        chord_function.append(c[-1])
+
+    assert len(chord_function) == len(prototype)
+    all_t = []
+    for i in range(len(roots)):
+        t = [map2roots[p + i] + cf for p, cf in zip(prototype, chord_function)]
+        all_t.append(t)
+    return all_t
+
+
 # hardcode the data for now
 with open("12BarBluesOmnibook.txt", "r") as f:
    r = f.readlines()
@@ -226,15 +369,37 @@ for n, b in pairs:
     new_bars.append(bb)
 pairs = zip(names, new_bars)
 
+
+"""
+final_pairs = []
+for p in pairs:
+    t_p = transpose(p[1])
+    final_pairs += [(p[0], ti_p) for ti_p in t_p]
+pairs = final_pairs
+"""
+
 random_state = np.random.RandomState(1999)
 max_order = 5
 rrange = 5
 dur = 2
 tempo = 110
 
-m = MaxOrder(max_order)
+#m = CMP(1, max_order=None, ptype="fixed", named_constraints={"start": ["C7"], "end": ["G7"], "position": {4: ["F7"]}}, verbose=False)
+m = CMP(1, max_order=None, ptype="fixed", named_constraints={"alldiff": True, "end": ["G7"]}, verbose=False)
 for p in pairs:
     m.insert(p[1])
+t = m.branch(["C7"], 8)
+if len(t) == 0:
+    raise ValueError("No solution found!")
+
+res = t[0][1]
+# repeat 2x
+render_chords([res + res], "sample_branch_{}.mid", dur=dur, tempo=tempo)
+raise ValueError()
+
+m = CMP(4, max_order=5, ptype="max", named_constraints={"start": ["C7"], "end": ["G7"]}, verbose=False)
+#t = m.branch(pairs[0][1], 8)
+raise ValueError("Complete")
 
 # greedy example
 r = []
@@ -244,26 +409,6 @@ for n, p in enumerate(pairs):
     ri = m.constrained_greedy(part, int(4 * rrange), random_state)
     r.append(ri)
 
-midi_p = []
-for ri in r:
-    rch = [realize_chord(rii, 3) for rii in ri]
-    rt = []
-    for rchi in rch:
-        rt.append([rchi[idx].midi for idx in range(len(rchi))])
-    midi_p.append(rt)
-
-# all half note
-midi_d = [[[dur for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
-
-midi_p = [np.array(midi_pi) for midi_pi in midi_p]
-midi_d = [np.array(midi_di) for midi_di in midi_d]
-
-name_tag = "sample_greedy_{}.mid"
-pitches_and_durations_to_pretty_midi(midi_p, midi_d,
-                                     save_dir="samples/samples",
-                                     name_tag=name_tag,
-                                     default_quarter_length=tempo,
-                                     voice_params="piano")
 
 # branch example
 r = []
