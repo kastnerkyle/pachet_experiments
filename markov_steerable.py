@@ -5,9 +5,49 @@ import os
 import cPickle as pickle
 import copy
 import collections
-from collections import defaultdict
+from collections import defaultdict, Counter, namedtuple
 import music21
 from pthbldr.datasets import pitches_and_durations_to_pretty_midi
+
+from functools import partial
+
+
+class cls_memoize(object):
+    """cache the return value of a method
+
+    This class is meant to be used as a decorator of methods. The return value
+    from a given method invocation will be cached on the instance whose method
+    was invoked. All arguments passed to a method decorated with memoize must
+    be hashable.
+
+    If a memoized method is invoked directly on its class the result will not
+    be cached. Instead the method will be invoked like a static method:
+    class Obj(object):
+        @memoize
+        def add_to(self, arg):
+            return self + arg
+    Obj.add_to(1) # not enough arguments
+    Obj.add_to(1, 2) # returns 3, result is not cached
+    """
+    def __init__(self, func):
+        self.func = func
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self.func
+        return partial(self, obj)
+    def __call__(self, *args, **kw):
+        obj = args[0]
+        try:
+            cache = obj.__cache
+        except AttributeError:
+            cache = obj.__cache = {}
+        key = (self.func, args[1:], frozenset(kw.items()))
+        try:
+            res = cache[key]
+        except KeyError:
+            res = cache[key] = self.func(*args, **kw)
+        return res
+
 
 class Trie(object):
     def __init__(self):
@@ -45,28 +85,24 @@ class Trie(object):
             return True
         return False
 
-    def partial(self, prefix_list):
+    @cls_memoize
+    def partial(self, prefix_tuple):
+        prefix = prefix_tuple
         # items of the list should be hashable
         # Returns valid keys for continuation
-        if len(prefix_list) + 1 not in self.orders:
-            raise ValueError("item {} has invalid length {} for partial search, only {} supported".format(prefix_list, len(prefix_list), [o - 1 for o in self.orders]))
+        if len(prefix) + 1 not in self.orders:
+            raise ValueError("item {} has invalid length {} for partial search, only {} supported".format(prefix, len(prefix), [o - 1 for o in self.orders]))
         current = self.root
-        for p in prefix_list:
+        for p in prefix:
             if p not in current:
                 return []
             current = current[p]
         return [c for c in current.keys() if c != self._end]
 
 
-class Node(object):
-    def __init__(self, level, proposed_note, log_prob, previous_notes):
-        self.level = level
-        self.proposed_note = proposed_note
-        self.previous_notes = previous_notes
-        self.log_prob = log_prob
-
-    def __repr__(self):
-        return str((self.level, self.proposed_note, self.log_prob, self.previous_notes))
+Node = namedtuple("Node",
+        ["level", "proposed_note", "log_prob", "previous_notes"],
+        verbose=False, rename=False)
 
 
 class CMP(object):
@@ -104,7 +140,7 @@ class CMP(object):
         self.order = order
         self.goods = [Trie() for i in range(0, self.order)]
         self.max_order = max_order
-        constraint_types = ["end", "start", "position", "alldiff"]
+        constraint_types = ["end", "start", "position", "alldiff", "contains", "not_contains"]
         # need to flesh out API
         # position is dict of dict of list
         # alldiff key indicates window size
@@ -121,42 +157,48 @@ class CMP(object):
         for i in list(range(0, self.order)):
             self.goods[i].order_insert(i + 1, list_of_items)
 
-    def partial(self, prefix_list):
-        # returns dict of item: prob
-        if len(prefix_list) >= self.order:
-            if self.verbose:
-                print("item {} has invalid length {} for partial search, using last {}".format(prefix_list, len(prefix_list), self.order))
-            partial_prefix_list = prefix_list[-self.order:]
+    def partial(self, prefix_tuple):
+        prefix = prefix_tuple
+        if self.max_order is not None:
+            prefix = prefix[-self.max_order:]
         else:
-            if len(prefix_list) < self.order:
-                raise ValueError("Prefix list for partial match too short")
+            prefix = prefix[-self.order:]
+        return self._partial(prefix)
 
-            #raise ValueError("item {} has invalid length {} for partial search, only {} supported".format(prefix_list, len(prefix_list), self.order))
+    @cls_memoize
+    def _partial(self, prefix_tuple):
+        # subclass to memoize more values
+        # returns dict of key: prob
+        prefix = prefix_tuple
         all_p = []
         all_gp = []
         for i in list(range(0, self.order))[::-1]:
-            gp = self.goods[i].partial(partial_prefix_list[-(i + 1):])
-            # use old_prefix_list since that is the full data
-            if self.max_order is not None and len(prefix_list) > self.max_order:
-                bp = self.bad.partial(prefix_list[-self.max_order:])
+            gp = self.goods[i].partial(prefix[-(i + 1):])
+            # already checked for self.max_order
+            if self.max_order is not None:
+                bp = self.bad.partial(prefix[-self.max_order:])
             else:
                 bp = []
             p = list(set(gp) - set(bp))
             if self.ptype == "fixed":
                 all_p += p
                 all_gp += gp
+                break
+            else:
+                if len(p) > 0:
+                    all_p += p
+                    all_gp += gp
+                    if self.ptype == "max":
+                        break
 
-            if len(p) > 0:
-                all_p += p
-                all_gp += gp
-                if self.ptype == "max":
-                    break
+        """
+        d = {k: 1. / len(ps) for k in ps}
+        return d
+        """
 
-        ps = list(set(all_p))
-        gps = np.array(all_gp)
-        d = {psi: sum(gps == psi) for psi in ps}
-        s = sum(d.values())
-        d = {k: float(v) / s for k, v in d.items()}
+        sums = Counter(all_gp)
+        tot = sum(sums.values())
+        d = {k: float(v) / tot for k, v in sums.items()}
         return d
 
     def check_constraint(self, node, sequence, depth_index, max_length):
@@ -173,7 +215,7 @@ class CMP(object):
 
         if "end" in self.named_constraints:
             valid_end = self.named_constraints["end"]
-            if depth_index == (max_length - 1) and sequence[-1] not in valid_end:
+            if depth_index == (max_length - 1) and generated[-1] not in valid_end:
                 return False
 
         if "position" in self.named_constraints:
@@ -181,11 +223,23 @@ class CMP(object):
             for k, v in position_checks.items():
                 if len(generated) > k and generated[k] not in v:
                     return False
+
+        if "contains" in self.named_constraints:
+            contained_elems = self.named_constraints["contains"]
+            if depth_index == (max_length - 1):
+                for c in contained_elems:
+                    if c not in generated:
+                        return False
+
+        if "not_contains" in self.named_constraints:
+            not_contained_elems = self.named_constraints["not_contains"]
+            for nc in not_contained_elems:
+                if nc in generated:
+                    return False
         return True
 
-
     def branch(self, seed_list, length):
-        res = [s for s in seed_list]
+        res = tuple(seed_list)
 
         options = self.partial(res)
 
@@ -204,10 +258,10 @@ class CMP(object):
         break_while = False
         while len(el) > 0 and break_while is False:
             current = pop()
-            index = current.level
-            cur_note = current.proposed_note
-            cur_seq = current.previous_notes
-            cur_log_prob = current.log_prob
+            index = current[0]
+            cur_note = current[1]
+            cur_log_prob = current[2]
+            cur_seq = current[3]
             new_seq = cur_seq + (cur_note,)
             if index >= length:
                 if cur_seq not in soln:
@@ -253,7 +307,10 @@ def realize_chord(chordstring, numofpitch=3, baseoctave=4, direction="ascending"
             chordstring = chordstring.replace("halfDim", "/o7")
         if chordstring[:2] == "Eb":
             chordstring = "D#" + chordstring[2:]
-
+        elif chordstring[:2] == "Ab":
+            chordstring = "G#" + chordstring[2:]
+        elif chordstring[:2] == "Bb":
+            chordstring = "A#" + chordstring[2:]
         try:
             pitches = music21.harmony.ChordSymbol(chordstring).pitches
         except ValueError:
@@ -370,13 +427,11 @@ for n, b in pairs:
 pairs = zip(names, new_bars)
 
 
-"""
 final_pairs = []
 for p in pairs:
     t_p = transpose(p[1])
     final_pairs += [(p[0], ti_p) for ti_p in t_p]
 pairs = final_pairs
-"""
 
 random_state = np.random.RandomState(1999)
 max_order = 5
@@ -384,17 +439,31 @@ rrange = 5
 dur = 2
 tempo = 110
 
+m = CMP(1,
+        max_order=None,
+        ptype="fixed",
+        named_constraints={"not_contains": ["C7"],
+                           "position": {8: ["F7"]},
+                           "alldiff": True,
+                           "end": ["G7"]})
 #m = CMP(1, max_order=None, ptype="fixed", named_constraints={"start": ["C7"], "end": ["G7"], "position": {4: ["F7"]}}, verbose=False)
-m = CMP(1, max_order=None, ptype="fixed", named_constraints={"alldiff": True, "end": ["G7"]}, verbose=False)
-for p in pairs:
+#m = CMP(1, max_order=None, ptype="fixed", named_constraints={"alldiff": True, "not_contains": ["C7"], "position": {5: ["F#7"], 9: ["F7"]}, "end": ["G7"]}, verbose=False)
+for n, p in enumerate(pairs):
     m.insert(p[1])
-t = m.branch(["C7"], 8)
+    if n > 48:
+        break
+
+t = m.branch(["C7"], 19)
 if len(t) == 0:
     raise ValueError("No solution found!")
 
 res = t[0][1]
+res = ("C7",) + res
+print(res)
 # repeat 2x
 render_chords([res + res], "sample_branch_{}.mid", dur=dur, tempo=tempo)
+import sys
+sys.exit()
 raise ValueError()
 
 m = CMP(4, max_order=5, ptype="max", named_constraints={"start": ["C7"], "end": ["G7"]}, verbose=False)
