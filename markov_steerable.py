@@ -366,6 +366,13 @@ def render_chords(list_of_chord_lists, name_tag, dur=2, tempo=110, voices=4,
             midi_pp.append(p)
             midi_dd.append(d)
 
+        name_stub = name_tag.split(".")[0]
+        text_tag = save_dir + "/" + name_stub + ".txt"
+        for i in range(len(midi_pp)):
+            with open(text_tag.format(i), "w") as f:
+                r = " | ".join(list_of_chord_lists[i])
+                f.writelines([r])
+
         pitches_and_durations_to_pretty_midi(midi_pp, midi_dd,
                                              save_dir=save_dir,
                                              name_tag=name_tag,
@@ -459,7 +466,6 @@ if len(t) == 0:
 
 res = t[0][1]
 res = ("C7",) + res
-print(res)
 # repeat 2x
 render_chords([res + res], "sample_branch_{}.mid", dur=dur, tempo=tempo)
 import sys
