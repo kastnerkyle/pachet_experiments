@@ -6,6 +6,7 @@ import cPickle as pickle
 import copy
 import collections
 from collections import defaultdict, Counter, namedtuple
+import heapq
 import music21
 from pthbldr.datasets import pitches_and_durations_to_pretty_midi
 
@@ -238,21 +239,54 @@ class CMP(object):
                     return False
         return True
 
-    def branch(self, seed_list, length):
+    def branch(self, seed_list, length, search="depth", return_on=-1):
+        # seach options
+        # depth
+        # best
+        # breadth
+        # dtob depth-to-best, depth til 1 solution found, then best
         res = tuple(seed_list)
 
         options = self.partial(res)
 
         el = []
-        def push(i, p=None):
-            el.append(i)
+        def dpush(i, p=None):
+            el.append((-p, i))
 
-        def pop():
-            return el.pop()
+        def dpop():
+            return el.pop()[1]
 
+        def brpush(i, p=None):
+            el.append((-p, i))
+
+        def brpop():
+            return el.pop(0)[1]
+
+        def bpush(i, p=None):
+            el.append((-p, i))
+
+        def bpop():
+            heapq.heapify(el)
+            return heapq.heappop(el)[1]
+
+        if search == "dtb" or search == "depth":
+           push = dpush
+           pop = dpop
+        elif search == "breadth":
+           push = brpush
+           pop = brpop
+        elif search == "best":
+           push = bpush
+           pop = bpop
+        else:
+           raise ValueError("Unknown value for 'search', got {}".format(search))
+
+
+        best_log_prob = -float("inf")
         for k, v in options.items():
-            n = Node(0, k, np.log(v), tuple(res))
-            push(n)
+            log_prob = np.log(v)
+            n = Node(0, k, log_prob, tuple(res))
+            push(n, log_prob)
 
         soln = {}
         break_while = False
@@ -261,18 +295,34 @@ class CMP(object):
             index = current[0]
             cur_note = current[1]
             cur_log_prob = current[2]
+            # always adding a number between 0 and -inf, stopping immediately
+            # would be the upper bound on the sequence probability
+            if cur_log_prob < best_log_prob:
+                continue
             cur_seq = current[3]
             new_seq = cur_seq + (cur_note,)
             if index >= length:
                 if cur_seq not in soln:
                     # soln: log_prob
                     soln[cur_seq] = cur_log_prob
+                    if cur_log_prob > best_log_prob:
+                        best_log_prob = cur_log_prob
+                        if search == "dtb":
+                            heapq.heapify(el)
+                            push = bpush
+                            pop = bpop
+
+                    if return_on > 0:
+                        if len(soln.keys()) >= return_on:
+                            break_while = True
             else:
                 if self.check_constraint(current, new_seq, index, length):
                     options = self.partial(new_seq)
                     for k, v in options.items():
-                        n = Node(index + 1, k, cur_log_prob + np.log(v), new_seq)
-                        push(n)
+                        new_log_prob = cur_log_prob + np.log(v)
+                        if new_log_prob >= best_log_prob:
+                            n = Node(index + 1, k, new_log_prob, new_seq)
+                            push(n, new_log_prob)
 
         res = sorted([(v, k[len(seed_list):]) for k, v in soln.items()])[::-1]
         return res
@@ -457,7 +507,7 @@ m = CMP(1,
 #m = CMP(1, max_order=None, ptype="fixed", named_constraints={"alldiff": True, "not_contains": ["C7"], "position": {5: ["F#7"], 9: ["F7"]}, "end": ["G7"]}, verbose=False)
 for n, p in enumerate(pairs):
     m.insert(p[1])
-    if n > 48:
+    if n > 24:
         break
 
 t = m.branch(["C7"], 19)
