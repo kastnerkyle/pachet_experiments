@@ -80,7 +80,9 @@ def do_eval(d):
     return preds, probs, hams, spams
 
 train_preds, train_probs, train_hams, train_spams = do_eval(train_data)
-print("Train accuracy {}".format(np.mean([tl == tp for tl, tp in zip(train_labels, train_preds)])))
+train_score = np.mean([tl == tp for tl, tp in zip(train_labels, train_preds)])
+print("Train accuracy {}".format(train_score))
 test_preds, test_probs, test_hams, test_spams = do_eval(test_data)
-print("Test accuracy {}".format(np.mean([tl == tp for tl, tp in zip(test_labels, test_preds)])))
+test_score = np.mean([tl == tp for tl, tp in zip(test_labels, test_preds)])
+print("Test accuracy {}".format(test_score))
 from IPython import embed; embed(); raise ValueError()

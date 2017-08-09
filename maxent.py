@@ -2,6 +2,37 @@ import numpy as np
 from collections import Counter, defaultdict
 from minimize import minimize
 import scipy as sp
+import copy
+import hashlib
+
+class memoize(object):
+    def __init__(self, func):
+        self.func = func
+        self.lu = {}
+
+    def __call__(self, *args):
+        try:
+            ha = hash(args)
+            return self.lu[args]
+        # numpy array in there
+        except TypeError:
+            new_args = []
+            for a in args:
+                try:
+                    hash(a)
+                    new_args.append(a)
+                except TypeError:
+                    b = a.view(np.uint8)
+                    b_as_str = hashlib.sha1(b).hexdigest()
+                    new_args.append(b_as_str)
+            ha = hash(tuple(new_args))
+        if ha in self.lu:
+            return self.lu[ha]
+        else:
+            r = self.func(*args)
+            self.lu[ha] = r
+            return r
+
 
 def log_sum_exp(x, axis=-1):
     """Compute log(sum(exp(x))) in a numerically stable way.
@@ -35,7 +66,7 @@ class SparseMaxEnt(object):
     """ Also called a log-linear model, or logistic regression.
         Implementation using sparsity for discrete features"""
     def __init__(self, feature_function, n_features, n_classes,
-                 random_state=None, smoothing=0, optimizer="lbfgs",
+                 random_state=None, shuffle=True, optimizer="lbfgs",
                  verbose=True):
         # feature function returns list of indices
         # features are only indicator
@@ -43,6 +74,7 @@ class SparseMaxEnt(object):
         self.n_features = n_features
         self.n_classes = n_classes
         self.random_state = random_state
+        self.shuffle = shuffle
         self.optimizer = optimizer
         if random_state == None:
             raise ValueError("Random state must not be None!")
@@ -50,22 +82,22 @@ class SparseMaxEnt(object):
         #self.params = np.zeros((self.n_classes * self.n_features + self.n_classes,))
         self.weights = self.params[:self.n_classes * self.n_features].reshape(self.n_features, self.n_classes)
         self.biases = self.params[-self.n_classes:]
+        # memoize it
         self.feature_function = feature_function
-        self.class_feature_counters = [Counter() for c in range(n_classes)]
-        self.class_priors = [0 for c in range(n_classes)]
-        self.class_defaults = [defaultdict(lambda: smoothing) for c in range(n_classes)]
+        self.mem_feature_function = memoize(feature_function)
         self.verbose = verbose
 
-    def fit(self, data, labels, weight_cost):
+    def fit(self, data, labels, l1_weight_cost=0., l2_weight_cost=0.):
         if self.optimizer == "lbfgs":
             from scipy.optimize import minimize
             res = minimize(self.f_and_g, self.params.copy(),
-                           (data, labels, weight_cost), method="L-BFGS-B", jac=True)
+                           (data, labels, l1_weight_cost, l2_weight_cost), method="L-BFGS-B", jac=True,
+                           options={"ftol": 1E-4})
             p = res.x
         elif self.optimizer == "minimize_cg":
             max_n_line_search = np.inf
             p, g, n_line_searches = minimize(self.params.copy(),
-                                             (data, labels, weight_cost),
+                                             (data, labels, l1_weight_cost, l2_weight_cost),
                                              self.f_and_g,
                                              True,
                                              maxnumlinesearch=max_n_line_search,
@@ -106,33 +138,100 @@ class SparseMaxEnt(object):
     def _uh(self, oh_x):
         return oh_x.argmax(len(oh_x.shape)-1)
 
-    def predict_proba(self, data):
-        label_scores = np.zeros((len(data), self.n_classes))
-        for n, x in enumerate(data):
-            active_idx = sorted(list(set(self.feature_function(x))))
-            if len(active_idx) == 0:
-                continue
-            active_weights = self.weights[active_idx, :]
-            active_biases = self.biases
-            sscores = active_weights.sum(axis=0) + active_biases
-            label_scores[n] = sscores
-        sprobs = softmax(label_scores)
-        return sprobs
+    def likelihoods(self, data, pseudolabels):
+        # trim means return regardless of matching original data length
+        active_idxs = self.feature_function(data)
+        inds = [n for n in range(len(active_idxs)) if hasattr(active_idxs[n], "flatten") or active_idxs[n] != None]
+        not_inds = [n for n in range(len(active_idxs)) if not hasattr(active_idxs[n], "flatten") and active_idxs[n] == None]
 
-    def _cost_and_grads(self, data, labels, weight_cost):
-        assert len(data) == len(labels)
-        label_scores = np.zeros((len(data), self.n_classes))
-        for n, (x, y) in enumerate(zip(data, labels)):
-            active_idx = sorted(list(set(self.feature_function(x))))
-            if len(active_idx) == 0:
-                continue
+        active_idxs = [active_idxs[ii] for ii in inds]
+
+        label_scores = np.zeros((len(active_idxs), self.n_classes))
+        for n in range(len(active_idxs)):
+            active_idx = active_idxs[n]
             active_weights = self.weights[active_idx, :]
             active_biases = self.biases
             sscores = active_weights.sum(axis=0) + active_biases
             label_scores[n] = sscores
         sprobs = softmax(label_scores)
+
+        final_probs = []
+        si = 0
+        for ii in range(len(data)):
+            if ii in inds:
+                new = sprobs[si]
+                final_probs.append(new)
+                si += 1
+            elif ii in not_inds:
+               new = 0. * sprobs[0] - 1.
+               final_probs.append(new)
+            else:
+               raise ValueError("This shouldnt happen")
+        sprobs = np.array(final_probs)
+        lls = sprobs[list(range(len(data))), pseudolabels]
+        return lls
+
+    def predict_proba(self, data):
+        # trim means return regardless of matching original data length
+        active_idxs = self.feature_function(data)
+        inds = [n for n in range(len(active_idxs)) if hasattr(active_idxs[n], "flatten") or active_idxs[n] != None]
+        not_inds = [n for n in range(len(active_idxs)) if not hasattr(active_idxs[n], "flatten") and active_idxs[n] == None]
+
+        active_idxs = [active_idxs[ii] for ii in inds]
+
+        label_scores = np.zeros((len(active_idxs), self.n_classes))
+        for n in range(len(active_idxs)):
+            active_idx = active_idxs[n]
+            active_weights = self.weights[active_idx, :]
+            active_biases = self.biases
+            sscores = active_weights.sum(axis=0) + active_biases
+            label_scores[n] = sscores
+        sprobs = softmax(label_scores)
+
+        final_probs = []
+        si = 0
+        for ii in range(len(data)):
+            if ii in inds:
+                new = sprobs[si]
+                final_probs.append(new)
+                si += 1
+            elif ii in not_inds:
+               new = 0. * sprobs[0] - 1.
+               final_probs.append(new)
+            else:
+               raise ValueError("This shouldnt happen")
+        return np.array(final_probs)
+
+    def _cost_and_grads(self, data, labels, l1_weight_cost, l2_weight_cost):
+        assert len(data) == len(labels)
+
+        # switch to block transform...
+        # preparation for block transform
+        active_idxs = self.mem_feature_function(data)
+        if len(active_idxs) != len(labels):
+            raise ValueError("feature_function should return same number of datapoints! Return None for entries to ignore in training")
+
+        # short circuit OR to avoid issues with array compare
+        inds = [n for n in range(len(active_idxs)) if hasattr(active_idxs[n], "flatten") or active_idxs[n] != None]
+
+        if self.shuffle:
+            self.random_state.shuffle(inds)
+
+        active_idxs = [active_idxs[ii] for ii in inds]
+        labels = [labels[ii] for ii in inds]
+
+        label_scores = np.zeros((len(labels), self.n_classes))
+        for n in range(len(active_idxs)):
+            active_idx = active_idxs[n]
+            active_weights = self.weights[active_idx, :]
+            active_biases = self.biases
+            sscores = active_weights.sum(axis=0) + active_biases
+            label_scores[n] = sscores
+
+        sprobs = softmax(label_scores)
+        # https://stats.stackexchange.com/questions/45643/why-l1-norm-for-sparse-models
         nll = -np.sum(np.log(sprobs)[list(range(len(labels))), labels])
-        nll = nll / float(len(labels)) + weight_cost * np.sum(self.weights ** 2).sum()
+        nll = nll / float(len(labels)) + l1_weight_cost * np.sum(np.abs(self.weights)).sum() + l2_weight_cost * np.sum(self.weights ** 2).sum()
         if self.verbose:
             print("nll {}".format(nll))
 
@@ -143,21 +242,26 @@ class SparseMaxEnt(object):
 
         sgrad_w = np.zeros((self.n_features, self.n_classes))
         sgrad_b = np.zeros((self.n_classes,))
-        for n, (x, y) in enumerate(zip(data, labels)):
-            active_idx = sorted(list(set(self.feature_function(x))))
-            if len(active_idx) == 0:
-                continue
+        # use cached active_idxs
+        #for n, (x, y) in enumerate(zip(data, labels)):
+        #    active_idx = sorted(list(set(self.feature_function(x))))
+        #    if len(active_idx) == 0:
+        #        continue
+        for n in range(len(active_idxs)):
+            active_idx = active_idxs[n]
             sgrad_w[active_idx] += dsprobs[n]
             sgrad_b += dsprobs[n]
+        sgrad_w += l1_weight_cost * np.sign(self.weights)
+        sgrad_w += l2_weight_cost * self.weights
         grads = np.hstack((sgrad_w.flatten(), sgrad_b))
         if self.verbose:
             print("grads_norm {}".format(np.sqrt((grads ** 2).sum())))
         return nll, grads
 
-    def f_and_g(self, x, features, labels, weight_cost):
+    def f_and_g(self, x, features, labels, l1_weight_cost, l2_weight_cost):
         xold = self.params.copy()
         self.update_params(x.copy())
-        result = self._cost_and_grads(features, labels, weight_cost)
+        result = self._cost_and_grads(features, labels, l1_weight_cost, l2_weight_cost)
         self.update_params(xold.copy())
         return result
 
