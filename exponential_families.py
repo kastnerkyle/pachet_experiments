@@ -6,7 +6,7 @@ import cPickle as pickle
 import copy
 import collections
 from collections import defaultdict
-from maxent import SparseMaxEnt
+from maxent import SparseMaxEnt, log_sum_exp
 import cPickle as pickle
 import time
 
@@ -201,7 +201,7 @@ def get_models(dataset, labels):
 models = get_models(dataset, labels)
 
 random_state = np.random.RandomState(2147)
-generated = copy.copy(dataset[:100])
+generated = copy.copy(dataset[:150])
 random_state.shuffle(generated)
 
 def save_midi(generated, itr):
@@ -209,13 +209,13 @@ def save_midi(generated, itr):
     name_tag = "generated_{}".format(itr) + "_{}.mid"
     save_dir = "samples/samples"
 
-    quantized_to_pretty_midi([generated[h_context:-h_context]], .125,
+    quantized_to_pretty_midi([generated[2 * h_context:-2 * h_context]], .125,
                              save_dir=save_dir,
                              name_tag=name_tag,
                              default_quarter_length=80,
                              voice_params="nylon")
 
-total_itr = 100
+total_itr = 200
 for n in range(total_itr):
     print("Iteration {}".format(n))
     if n % 10 == 0 or n == (total_itr - 1):
@@ -228,45 +228,111 @@ for n in range(total_itr):
     random_state.shuffle(moves)
 
     comb_offset = random_state.randint(10000) % (2 * h_context + 1)
+    all_changed = []
     for m in moves:
         j = m
-        ls = models[j].likelihoods(generated, generated[:, j])
 
-        poss = [vi for vi in rlut.values() if vi > 0 and vi < 88]
-        #rvv = random_state.choice(generated[h_context:-h_context, j], len(generated[h_context:-h_context]), replace=True)
+        """
+        poss_sil_count = [g for g in generated[h_context:-h_context, j] if g == 0]
+        poss_nosil_count = [g for g in generated[h_context:-h_context, j] if g != 0]
+        # average 50% silence at most
+        if len(poss_sil_count) > len(poss_nosil_count):
+            poss = list(sorted(set([g for g in generated[h_context:-h_context, j] if g > 0])))
+        else:
+            poss = list(sorted(set([g for g in generated[h_context:-h_context, j]])))
+        """
+        poss = list(sorted(set([g for g in generated[h_context:-h_context, j]])))
         rvv = random_state.choice(poss, len(generated[h_context:-h_context]), replace=True)
 
         l = models[j].predict_proba(generated)
+        # argmax ?
         valid_sub = l[h_context:-h_context].argmax(axis=1)
-        cvv = np.array([rlut[vs] for vs in valid_sub])
+        argmax_cvv = np.array([rlut[vs] for vs in valid_sub])
 
-        #cvv = generated[h_context - 1:-h_context - 1, j]
+        valid_sub = l[h_context:-h_context]
+        def np_softmax(v, t):
+            v = v / float(t)
+            e_X = np.exp(v - v.max(axis=-1, keepdims=True))
+            out = e_X / e_X.sum(axis=-1, keepdims=True)
+            return out
+
+        temperature = t = 0.01
+        if t > 0:
+            valid_sub = np_softmax(valid_sub, t)
+            valid_draw = np.array([random_state.multinomial(1, v).argmax() for v in valid_sub])
+        else:
+            valid_draw = l[h_context:-h_context].argmax(axis=1)
+
+        cvv = []
+        for n, vs in enumerate(valid_draw):
+            if vs >= 58:
+                cvv.append(argmax_cvv[n])
+                assert argmax_cvv[n] < 88
+            else:
+                cvv.append(rlut[vs])
+        cvv = np.array(cvv)
 
         # flip coin to choose between random and copy
-        choose = np.array(np.random.rand(len(cvv)) > .85).astype("int16")
+        # this gives a pretty interesting pattern, but not Bach
+        #choose = np.array(np.random.rand(len(cvv)) > .95).astype("int16")
+        #vv = choose * rvv + (1 - choose) * cvv
+        vv = cvv
 
-        vv = cvv #choose * rvv + (1 - choose) * cvv
-
-        """
-        # proba + shuffled randomly as proposal dist
-        l = models[j].predict_proba(generated)
-        valid_sub = l[h_context:-h_context].argmax(axis=1)
-        vv = np.array([rlut[vs] for vs in valid_sub])
-        random_state.shuffle(vv)
-        """
+        nlls = [models[t].loglikelihoods(generated, generated[:, t]) for t in range(len(models))]
+        nlls_j = nlls[j]
 
         new_generated = copy.copy(generated)
         new_generated[h_context:-h_context, j] = vv
-        new_ls = models[j].likelihoods(new_generated, new_generated[:, j])
+        new_nlls = [models[t].loglikelihoods(new_generated, new_generated[:, t]) for t in range(len(models))]
+        new_nlls_j = new_nlls[j]
 
-        accept_score = new_ls[h_context:-h_context] / ls[h_context:-h_context]
-        accept_roll = random_state.rand(len(vv))
         accept_ind = np.array([1 if (viv % (2 * h_context + 1)) == comb_offset else 0 for viv in range(len(vv))])
+        accept_pos = np.where(accept_ind)[0]
+        score_ind = np.array([1. if (viv % (2 * h_context + 1)) == comb_offset else 0. for viv in range(len(vv))])
+
+        accept_winds = (np.where(accept_ind)[0][None] + np.arange(-h_context, h_context + 1)[:, None]).T
+
+        not_j = np.array([t for t in range(len(models)) if t != j])
+
+        for ii in range(len(accept_pos)):
+            pos = accept_pos[ii]
+            hidx = pos + np.arange(-h_context, h_context + 1)
+            hidx = hidx[hidx > h_context]
+            hidx = hidx[hidx < (len(nlls_j) - h_context)]
+            # this is only horizontal likelihood!
+            # need vertical, diagonal
+            if (pos < h_context + 1) or (pos > len(nlls_j) - h_context - 1):
+                continue
+            if len(hidx) == 0:
+                continue
+            htop = log_sum_exp(new_nlls_j[hidx])
+            hbot = log_sum_exp(nlls_j[hidx])
+
+            vtop = log_sum_exp(np.array([nlls[nj][pos] for nj in not_j]))
+            vbot = log_sum_exp(np.array([new_nlls[nj][pos] for nj in not_j]))
+
+            dm1top = log_sum_exp(np.array([nlls[nj][pos - 1] for nj in not_j]))
+            dm1bot = log_sum_exp(np.array([new_nlls[nj][pos - 1] for nj in not_j]))
+
+            dp1top = log_sum_exp(np.array([nlls[nj][pos + 1] for nj in not_j]))
+            dp1bot = log_sum_exp(np.array([new_nlls[nj][pos + 1] for nj in not_j]))
+
+            dtop = dm1top + dp1top
+            dbot = dm1bot + dp1bot
+
+            top = np.exp(htop + vtop + dtop)
+            bot = np.exp(hbot + vbot + dbot)
+            score_ind[np.where(accept_ind)[0][ii]] *= (top / float(bot))
+
+        accept_roll = random_state.rand(len(vv))
 
         # if new_ls small, chance is low
-        #accept = np.array((accept_ind * accept_roll) < accept_score).astype("int32")
-        accept = accept_ind
+        accept = np.array((accept_ind * accept_roll) < (score_ind)).astype("int32")
         comb_offset += 1
         if comb_offset >= 2 * h_context + 1:
             comb_offset = comb_offset % (2 * h_context + 1)
+        old_generated = copy.copy(generated)
         generated[h_context:-h_context, j] = accept * vv + (1 - accept) * generated[h_context:-h_context, j]
+        changed = np.sum(generated[:, j] != old_generated[:, j]) / float(len(accept_pos)) #float(len(generated[:, j]))
+        all_changed.append(changed)
+    print("Average change ratio: {}".format(np.mean(all_changed)))

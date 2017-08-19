@@ -138,7 +138,7 @@ class SparseMaxEnt(object):
     def _uh(self, oh_x):
         return oh_x.argmax(len(oh_x.shape)-1)
 
-    def likelihoods(self, data, pseudolabels):
+    def loglikelihoods(self, data, pseudolabels):
         # trim means return regardless of matching original data length
         active_idxs = self.feature_function(data)
         inds = [n for n in range(len(active_idxs)) if hasattr(active_idxs[n], "flatten") or active_idxs[n] != None]
@@ -168,7 +168,7 @@ class SparseMaxEnt(object):
             else:
                raise ValueError("This shouldnt happen")
         sprobs = np.array(final_probs)
-        lls = sprobs[list(range(len(data))), pseudolabels]
+        lls = np.log(sprobs[list(range(len(data))), pseudolabels])
         return lls
 
     def predict_proba(self, data):
