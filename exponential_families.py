@@ -45,6 +45,7 @@ def get_data(offset=88, shuffle=True):
         return r
 
     mu = fetch_bach_chorales_music21()
+
     order = len(mu["list_of_data_pitch"][0])
 
     random_state = np.random.RandomState(1999)
@@ -77,8 +78,17 @@ def get_data(offset=88, shuffle=True):
         fnames = copy.deepcopy(keep_fnames)
 
     all_pr = []
+    all_len = []
+    # 16th note piano roll
     for ii in range(len(lp)):
-        pr = pitch_and_duration_to_piano_roll(lp[ii], ltd[ii], .125)
+        pr = pitch_and_duration_to_piano_roll(lp[ii], ltd[ii], .0625)
+        # only want things that are on the beats!
+        # 16th notes into quarters is a subdivision of 4
+        pr = pr[:len(pr) - len(pr) % 4]
+        pr = pr[::4]
+        nonsil = np.where(pr != 0)[0]
+        pr = pr[nonsil]
+        all_len.append(len(pr))
         all_pr.append(pr)
 
     note_set = set()
@@ -105,12 +115,14 @@ def get_data(offset=88, shuffle=True):
         lut[n] = i
         rlut[i] = n
         i += 1
-    return all_pr, lut, rlut
+    all_start = np.cumsum(all_len)
+    all_start = np.append(0, all_start)
+    return all_pr, lut, rlut, all_start
 
 offset = 88
 h_context = 3
 
-all_pieces, lut, rlut = get_data(offset)
+all_pieces, lut, rlut, song_start_idx = get_data(offset)
 dataset = np.concatenate(all_pieces, axis=0)
 
 n_classes = len(lut.keys())
@@ -201,24 +213,35 @@ def get_models(dataset, labels):
 models = get_models(dataset, labels)
 
 random_state = np.random.RandomState(2147)
-generated = copy.copy(dataset[:150])
-random_state.shuffle(generated)
+gen_len = 500
+song_ind = 0
+# any more than 100 pulls from neighboring songs... but don't even know borders of songs? oy
+song_start = song_start_idx[song_ind]
+song_stop = song_start_idx[song_ind + 1]
+generated = copy.copy(dataset[song_start:song_stop])
+generated = generated[:gen_len]
+for ii in range(generated.shape[1]):
+    new_g = copy.copy(generated[:, ii])
+    rand_g = random_state.choice(np.unique(new_g), size=len(new_g), replace=True)
+    generated[:, ii] = rand_g
 
 def save_midi(generated, itr):
     print("Saving, iteration {}".format(itr))
     name_tag = "generated_{}".format(itr) + "_{}.mid"
     save_dir = "samples/samples"
 
-    quantized_to_pretty_midi([generated[2 * h_context:-2 * h_context]], .125,
+    quantized_to_pretty_midi([generated[2 * h_context:-2 * h_context]], .25,
                              save_dir=save_dir,
                              name_tag=name_tag,
-                             default_quarter_length=80,
-                             voice_params="nylon")
+                             default_quarter_length=70,
+                             #voice_params="nylon")
+                             #voice_params="woodwinds")
+                             voice_params="piano")
 
-total_itr = 200
+total_itr = 25
 for n in range(total_itr):
     print("Iteration {}".format(n))
-    if n % 10 == 0 or n == (total_itr - 1):
+    if n % 1 == 0 or n == (total_itr - 1):
         save_midi(generated, n)
 
     # all voices, over the comb range
@@ -241,7 +264,10 @@ for n in range(total_itr):
         else:
             poss = list(sorted(set([g for g in generated[h_context:-h_context, j]])))
         """
+
         poss = list(sorted(set([g for g in generated[h_context:-h_context, j]])))
+        #nosil
+        #poss = list(sorted(set([g for g in generated[h_context:-h_context, j] if g > 0])))
         rvv = random_state.choice(poss, len(generated[h_context:-h_context]), replace=True)
 
         l = models[j].predict_proba(generated)
@@ -274,9 +300,10 @@ for n in range(total_itr):
 
         # flip coin to choose between random and copy
         # this gives a pretty interesting pattern, but not Bach
-        #choose = np.array(np.random.rand(len(cvv)) > .95).astype("int16")
-        #vv = choose * rvv + (1 - choose) * cvv
-        vv = cvv
+        choose = np.array(random_state.rand(len(cvv)) > .99).astype("int16")
+        # always sample from model dist
+        #choose = 0. * choose
+        vv = choose * rvv + (1 - choose) * cvv
 
         nlls = [models[t].loglikelihoods(generated, generated[:, t]) for t in range(len(models))]
         nlls_j = nlls[j]
@@ -333,6 +360,6 @@ for n in range(total_itr):
             comb_offset = comb_offset % (2 * h_context + 1)
         old_generated = copy.copy(generated)
         generated[h_context:-h_context, j] = accept * vv + (1 - accept) * generated[h_context:-h_context, j]
-        changed = np.sum(generated[:, j] != old_generated[:, j]) / float(len(accept_pos)) #float(len(generated[:, j]))
+        changed = np.sum(generated[:, j] != old_generated[:, j]) / float(len(generated[:, j]))
         all_changed.append(changed)
     print("Average change ratio: {}".format(np.mean(all_changed)))

@@ -168,7 +168,9 @@ class SparseMaxEnt(object):
             else:
                raise ValueError("This shouldnt happen")
         sprobs = np.array(final_probs)
-        lls = np.log(sprobs[list(range(len(data))), pseudolabels])
+        sub_idx = [l for l in list(range(len(data))) if l not in not_inds]
+        lls = np.zeros_like(sprobs[:, 0]) - 1E8
+        lls[sub_idx] = np.log(sprobs[list(range(len(data))), pseudolabels][sub_idx])
         return lls
 
     def predict_proba(self, data):
