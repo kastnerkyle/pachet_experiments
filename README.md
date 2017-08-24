@@ -79,9 +79,15 @@ Use the helper function `timidifyit.sh myfile.mid` to convert mid files into wav
 Requirements
 ============
 numpy
+
+scipy
+
 music21
+
 pretty\_midi
+
 python 2.7 (3 may work, not tested)
+
 timidity (optional)
 
 
