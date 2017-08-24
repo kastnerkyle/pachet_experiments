@@ -1,5 +1,19 @@
 Experiments around work of Sony CSL, Pachet et. al.
 
+Best results come from editing /etc/timidity/timidity.cfg
+
+and using 
+
+source /etc/timidity/fluidr3\_gm.cfg
+
+instead of the default 
+
+source /etc/timidity/freepats.cfg
+
+This may require the fluid-soundfont package, which can be installed with
+
+sudo apt-get install fluidsynth
+
 Requirements:
 numpy
 music21
