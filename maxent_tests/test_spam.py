@@ -5,6 +5,8 @@ from maxent import SparseMaxEnt
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+# uses dataset from
+# https://archive.ics.uci.edu/ml/datasets/sms+spam+collection
 # based on https://stackoverflow.com/questions/23455728/scikit-learn-balanced-subsampling
 def balanced_sample_maker(X, y, sample_size="max", random_state=None):
     y_o = y

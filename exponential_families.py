@@ -5,16 +5,43 @@ import os
 import cPickle as pickle
 import copy
 import collections
-from collections import defaultdict
+from collections import defaultdict, Counter
 from maxent import SparseMaxEnt, log_sum_exp
 import cPickle as pickle
 import time
 
-from pthbldr.datasets import fetch_bach_chorales_music21
-from pthbldr.datasets import quantized_to_pretty_midi
+from datasets import fetch_bach_chorales_music21
+from datasets import quantized_to_pretty_midi
 
-default_quarter_length = 55
-voice_type = "woodwinds"
+# default tempo of the saved midi
+default_quarter_length = 70
+# options include "nylon", "harpsichord", "woodwinds", "piano", "electric_piano", "organ", "legend", "weird"
+voice_type = "piano"
+# use data from a given key, can be "major" or "minor"
+# be sure to remove all the tmp_*.pkl files in the directory if you change this!
+key = "major"
+# l1 weight for training
+l1 = 3E-5
+# number of iterations to do resampling
+total_itr = 15
+# number of candidate notes per voice for random part of proposal distribution
+num_cands = 4
+# length of generation in quarter notes
+song_len = 500
+# song index into the dataset - random initial notes come from this song
+song_ind = 9
+# proportion of propsals that come from the model versus random
+model_proportion = 0.99
+# temperature of softmax for sampling
+temperature = 0.01
+# random seeds for shuffling data, training the model, and sampling
+shuffle_seed = 1999
+model_seed = 2100
+randomness_seed = 2147
+# directory to save in
+save_dir = "samples"
+if not os.path.exists(save_dir):
+    os.mkdir(save_dir)
 
 def pitch_and_duration_to_piano_roll(list_of_pitch_voices, list_of_duration_voices, min_dur):
     def expand(pitch, dur, min_dur):
@@ -48,8 +75,7 @@ def get_data(offset=88, shuffle=True):
 
     order = len(mu["list_of_data_pitch"][0])
 
-    random_state = np.random.RandomState(1999)
-    key = "major"
+    random_state = np.random.RandomState(shuffle_seed)
 
     lp = mu["list_of_data_pitch"]
     lt = mu["list_of_data_time"]
@@ -79,13 +105,14 @@ def get_data(offset=88, shuffle=True):
 
     all_pr = []
     all_len = []
-    # 16th note piano roll
     for ii in range(len(lp)):
+        # 16th note piano roll
         pr = pitch_and_duration_to_piano_roll(lp[ii], ltd[ii], .0625)
         # only want things that are on the beats!
         # 16th notes into quarters is a subdivision of 4
         pr = pr[:len(pr) - len(pr) % 4]
         pr = pr[::4]
+        # also avoid bars with silences in a voice
         nonsil = np.where(pr != 0)[0]
         pr = pr[nonsil]
         all_len.append(len(pr))
@@ -121,7 +148,6 @@ def get_data(offset=88, shuffle=True):
 
 offset = 88
 h_context = 3
-
 all_pieces, lut, rlut, song_start_idx = get_data(offset)
 dataset = np.concatenate(all_pieces, axis=0)
 
@@ -142,6 +168,7 @@ def feature_fn(X, i):
     notes = X
     for ii in range(h_context, len(notes) - h_context):
         tot = 0
+        # hard coded for 4 voices
         nv = [n for n in [0, 1, 2, 3] if n != which_voice]
 
         h_span = list(range(ii - h_context, ii + h_context + 1))
@@ -191,13 +218,12 @@ for which_voice in [0, 1, 2, 3]:
 
 def get_models(dataset, labels):
     models = []
-    random_state = np.random.RandomState(2100)
+    random_state = np.random.RandomState(model_seed)
     for which_voice in [0, 1, 2, 3]:
         if not os.path.exists("saved_sme_{}.pkl".format(which_voice)):
             model = SparseMaxEnt(feature_fns[which_voice], n_features=n_features, n_classes=n_classes,
                                  random_state=random_state)
             start_time = time.time()
-            l1 = 3E-5
             model.fit(dataset, labels[which_voice], l1)
             stop_time = time.time()
             print("Total training time {}".format(stop_time - start_time))
@@ -212,33 +238,31 @@ def get_models(dataset, labels):
 
 models = get_models(dataset, labels)
 
-random_state = np.random.RandomState(2147)
-gen_len = 500
-song_ind = 0
-# any more than 100 pulls from neighboring songs... but don't even know borders of songs? oy
+random_state = np.random.RandomState(randomness_seed)
 song_start = song_start_idx[song_ind]
 song_stop = song_start_idx[song_ind + 1]
 generated = copy.copy(dataset[song_start:song_stop])
-generated = generated[:gen_len]
+
+new_generated = []
 for ii in range(generated.shape[1]):
     new_g = copy.copy(generated[:, ii])
-    rand_g = random_state.choice(np.unique(new_g), size=len(new_g), replace=True)
-    generated[:, ii] = rand_g
+    c = Counter(new_g)
+    cands = [v for v, count in c.most_common(num_cands)]
+    rand_g = random_state.choice(cands, size=song_len, replace=True)
+    new_generated.append(rand_g)
+generated = np.array(new_generated).T
 
 def save_midi(generated, itr):
     print("Saving, iteration {}".format(itr))
     name_tag = "generated_{}".format(itr) + "_{}.mid"
-    save_dir = "samples/samples"
 
     quantized_to_pretty_midi([generated[2 * h_context:-2 * h_context]], .25,
                              save_dir=save_dir,
                              name_tag=name_tag,
-                             default_quarter_length=70,
-                             #voice_params="nylon")
-                             #voice_params="woodwinds")
-                             voice_params="piano")
+                             default_quarter_length=default_quarter_length,
+                             voice_params=voice_type)
 
-total_itr = 25
+# sampling loop
 for n in range(total_itr):
     print("Iteration {}".format(n))
     if n % 1 == 0 or n == (total_itr - 1):
@@ -246,7 +270,7 @@ for n in range(total_itr):
 
     # all voices, over the comb range
     # metropolized gibbs comb?
-    # OrMachine
+    # Idea of gibbs comb from OrMachine
     moves = list(range(generated.shape[1])) * (2 * h_context + 1)
     random_state.shuffle(moves)
 
@@ -254,24 +278,10 @@ for n in range(total_itr):
     all_changed = []
     for m in moves:
         j = m
-
-        """
-        poss_sil_count = [g for g in generated[h_context:-h_context, j] if g == 0]
-        poss_nosil_count = [g for g in generated[h_context:-h_context, j] if g != 0]
-        # average 50% silence at most
-        if len(poss_sil_count) > len(poss_nosil_count):
-            poss = list(sorted(set([g for g in generated[h_context:-h_context, j] if g > 0])))
-        else:
-            poss = list(sorted(set([g for g in generated[h_context:-h_context, j]])))
-        """
-
         poss = list(sorted(set([g for g in generated[h_context:-h_context, j]])))
-        #nosil
-        #poss = list(sorted(set([g for g in generated[h_context:-h_context, j] if g > 0])))
         rvv = random_state.choice(poss, len(generated[h_context:-h_context]), replace=True)
 
         l = models[j].predict_proba(generated)
-        # argmax ?
         valid_sub = l[h_context:-h_context].argmax(axis=1)
         argmax_cvv = np.array([rlut[vs] for vs in valid_sub])
 
@@ -282,7 +292,7 @@ for n in range(total_itr):
             out = e_X / e_X.sum(axis=-1, keepdims=True)
             return out
 
-        temperature = t = 0.01
+        t = temperature
         if t > 0:
             valid_sub = np_softmax(valid_sub, t)
             valid_draw = np.array([random_state.multinomial(1, v).argmax() for v in valid_sub])
@@ -291,6 +301,7 @@ for n in range(total_itr):
 
         cvv = []
         for n, vs in enumerate(valid_draw):
+            # hacking around issues
             if vs >= 58:
                 cvv.append(argmax_cvv[n])
                 assert argmax_cvv[n] < 88
@@ -299,10 +310,7 @@ for n in range(total_itr):
         cvv = np.array(cvv)
 
         # flip coin to choose between random and copy
-        # this gives a pretty interesting pattern, but not Bach
-        choose = np.array(random_state.rand(len(cvv)) > .99).astype("int16")
-        # always sample from model dist
-        #choose = 0. * choose
+        choose = np.array(random_state.rand(len(cvv)) > model_proportion).astype("int16")
         vv = choose * rvv + (1 - choose) * cvv
 
         nlls = [models[t].loglikelihoods(generated, generated[:, t]) for t in range(len(models))]
@@ -326,8 +334,6 @@ for n in range(total_itr):
             hidx = pos + np.arange(-h_context, h_context + 1)
             hidx = hidx[hidx > h_context]
             hidx = hidx[hidx < (len(nlls_j) - h_context)]
-            # this is only horizontal likelihood!
-            # need vertical, diagonal
             if (pos < h_context + 1) or (pos > len(nlls_j) - h_context - 1):
                 continue
             if len(hidx) == 0:
@@ -352,8 +358,6 @@ for n in range(total_itr):
             score_ind[np.where(accept_ind)[0][ii]] *= (top / float(bot))
 
         accept_roll = random_state.rand(len(vv))
-
-        # if new_ls small, chance is low
         accept = np.array((accept_ind * accept_roll) < (score_ind)).astype("int32")
         comb_offset += 1
         if comb_offset >= 2 * h_context + 1:
@@ -363,3 +367,4 @@ for n in range(total_itr):
         changed = np.sum(generated[:, j] != old_generated[:, j]) / float(len(generated[:, j]))
         all_changed.append(changed)
     print("Average change ratio: {}".format(np.mean(all_changed)))
+save_midi(generated, total_itr)
