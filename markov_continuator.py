@@ -7,26 +7,23 @@ import copy
 import collections
 from collections import defaultdict
 
-from pthbldr.datasets import pitches_and_durations_to_pretty_midi
-from pthbldr.datasets import quantized_to_pretty_midi
-from pthbldr.datasets import list_of_array_iterator
-from pthbldr.datasets import fetch_bach_chorales_music21
-from pthbldr.utils import minibatch_kmedians, beamsearch
-
-#mu = fetch_lakh_midi_music21(subset="pop")
-#mu = fetch_haralick_midi_music21(subset="mozart_piano")
-#mu = fetch_symbtr_music21()
-#mu = fetch_wikifonia_music21()
-
-#n_epochs = 500
-#n_epochs = 2350
-#n_epochs = 3000
+from datasets import pitches_and_durations_to_pretty_midi
+from datasets import quantized_to_pretty_midi
+from datasets import fetch_bach_chorales_music21
 
 mu = fetch_bach_chorales_music21()
 order = len(mu["list_of_data_pitch"][0])
 
 random_state = np.random.RandomState(1999)
+
 key = "minor"
+default_quarter_length = 70
+voice_type = "woodwinds"
+# history to consider
+split = 2
+clip_gen = 20
+# 0 Soprano, 1 Alto, 2 Tenor, 3 Bass
+which_voice = 0
 
 lp = mu["list_of_data_pitch"]
 lt = mu["list_of_data_time"]
@@ -50,12 +47,6 @@ if key != None:
     ltd = copy.deepcopy(keep_ltd)
     lql = copy.deepcopy(keep_lql)
 
-
-default_quarter_length = 55
-voice_type = "woodwinds"
-split = 20
-clip_gen = 20
-which_voice = 0
 
 # https://csl.sony.fr/downloads/papers/uploads/pachet-02f.pdf
 # https://stackoverflow.com/questions/11015320/how-to-create-a-trie-in-python
@@ -180,8 +171,8 @@ t = Continuator(random_state)
 
 inds = range(len(lp))
 for ii in inds:
-    pii = lp[ii][0]
-    tdii = ltd[ii][0]
+    pii = lp[ii][which_voice]
+    tdii = ltd[ii][which_voice]
     if len(pii) % split != 0:
         offset = split * (len(pii) // split)
         pii = pii[:offset]
@@ -199,53 +190,25 @@ for ii in inds:
         comb = [(pi, tdi) for pi, tdi in zip(pri, tdri)]
         t.insert(comb)
 
-"""
-tri = tr[0][:20]
-pri = pr[0][:20]
-comb_q = pitch_and_time_to_piano_roll(pri, tri, min_div)
-ret = t.continuate(comb_q, 100)
-ret = [ret]
-name_tag = "generated_{}.mid"
-quantized_to_pretty_midi(ret, min_div,
-                         save_dir="samples/samples",
-                         name_tag=name_tag,
-                         #list_of_quarter_length=[int(.5 * qpm) for qpm in qpms],
-                         default_quarter_length=default_quarter_length,
-                         voice_params=voice_type)
-"""
-
 tri = tdr[which_voice]
 pri = pr[which_voice]
 comb = [(pi, tdi) for pi, tdi in zip(pri, tdri)]
 ret = t.continuate(comb, clip_gen)
 
-name_tag = "generated_{}.mid"
-pitches = [[r[0] for r in ret]]
-durations = [[r[1] for r in ret]]
+pitches = [[[r[0] for r in ret]]]
+durations = [[[r[1] for r in ret]]]
+name_tag = "continuated_{}.mid"
 pitches_and_durations_to_pretty_midi(pitches, durations,
-                                     save_dir="samples/samples",
+                                     save_dir="samples/",
                                      name_tag=name_tag,
-                                     #list_of_quarter_length=[int(.5 * qpm) for qpm in qpms],
                                      default_quarter_length=default_quarter_length,
                                      voice_params=voice_type)
 
-pii = [lp[0][which_voice]]
-tdii = [ltd[0][which_voice]]
-name_tag = "sample_{}.mid"
+pii = [[lp[0][which_voice]]]
+tdii = [[ltd[0][which_voice]]]
+name_tag = "original_{}.mid"
 pitches_and_durations_to_pretty_midi(pii, tdii,
-                         save_dir="samples/samples",
+                         save_dir="samples/",
                          name_tag=name_tag,
-                         #list_of_quarter_length=[int(.5 * qpm) for qpm in qpms],
                          default_quarter_length=default_quarter_length,
                          voice_params=voice_type)
-"""
-qii = pitch_and_time_to_piano_roll(pii, tii, min_div)
-name_tag = "sample_{}.mid"
-qii = [qii]
-quantized_to_pretty_midi(qii, min_div,
-                         save_dir="samples/samples",
-                         name_tag=name_tag,
-                         #list_of_quarter_length=[int(.5 * qpm) for qpm in qpms],
-                         default_quarter_length=default_quarter_length,
-                         voice_params=voice_type)
-"""

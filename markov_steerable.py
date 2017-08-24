@@ -8,7 +8,7 @@ import collections
 from collections import defaultdict, Counter, namedtuple
 import heapq
 import music21
-from pthbldr.datasets import pitches_and_durations_to_pretty_midi
+from datasets import pitches_and_durations_to_pretty_midi
 
 from functools import partial
 
@@ -327,19 +327,6 @@ class CMP(object):
         res = sorted([(v, k[len(seed_list):]) for k, v in soln.items()])[::-1]
         return res
 
-    def constrained_greedy(self, seed_list, length, random_state):
-        res = [s for s in seed_list]
-        for i in range(length):
-            nxt = m.partial(res)
-            if len(nxt) > 0:
-                r = sorted([(k, v) for k, v in nxt.items()])
-                el = [ri[0] for ri in r]
-                pp = [ri[1] for ri in r]
-                res += [random_state.choice(el, p=pp)]
-            else:
-                return res
-        return res
-
 
 def realize_chord(chordstring, numofpitch=3, baseoctave=4, direction="ascending"):
     """
@@ -393,7 +380,7 @@ def realize_chord(chordstring, numofpitch=3, baseoctave=4, direction="ascending"
 
 
 def render_chords(list_of_chord_lists, name_tag, dur=2, tempo=110, voices=4,
-                  voice_type="piano", save_dir="samples/samples"):
+                  voice_type="piano", save_dir="samples/"):
         r = list_of_chord_lists
         midi_p = []
         for ri in r:
@@ -405,16 +392,22 @@ def render_chords(list_of_chord_lists, name_tag, dur=2, tempo=110, voices=4,
 
         midi_d = [[[dur for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
 
+        # BTAS to SATB
         midi_p = [np.array(midi_pi) for midi_pi in midi_p]
         midi_d = [np.array(midi_di) for midi_di in midi_d]
 
         midi_pp = []
         midi_dd = []
         for p, d in zip(midi_p, midi_d):
+            # hack to avoid strange chords
             w = np.where((p[:, 3] - p[:, 2]) > 12)[0]
             p[w, 3] = 0.
             midi_pp.append(p)
             midi_dd.append(d)
+
+        # BTAS to SATB
+        midi_pp = [midi_pi[:, ::-1] for midi_pi in midi_pp]
+        midi_dd = [midi_di[:, ::-1] for midi_di in midi_dd]
 
         name_stub = name_tag.split(".")[0]
         text_tag = save_dir + "/" + name_stub + ".txt"
@@ -483,7 +476,6 @@ for n, b in pairs:
     new_bars.append(bb)
 pairs = zip(names, new_bars)
 
-
 final_pairs = []
 for p in pairs:
     t_p = transpose(p[1])
@@ -491,7 +483,6 @@ for p in pairs:
 pairs = final_pairs
 
 random_state = np.random.RandomState(1999)
-max_order = 5
 rrange = 5
 dur = 2
 tempo = 110
@@ -502,15 +493,16 @@ m = CMP(1,
         named_constraints={"not_contains": ["C7"],
                            "position": {8: ["F7"]},
                            "alldiff": True,
-                           "end": ["G7"]})
-#m = CMP(1, max_order=None, ptype="fixed", named_constraints={"start": ["C7"], "end": ["G7"], "position": {4: ["F7"]}}, verbose=False)
-#m = CMP(1, max_order=None, ptype="fixed", named_constraints={"alldiff": True, "not_contains": ["C7"], "position": {5: ["F#7"], 9: ["F7"]}, "end": ["G7"]}, verbose=False)
+                           "end": ["G7"]},
+        verbose=True)
+
+# too many songs and bad things happen...
 for n, p in enumerate(pairs):
     m.insert(p[1])
-    if n > 24:
+    if n > 12:
         break
 
-t = m.branch(["C7"], 19)
+t = m.branch(["C7"], 15)
 if len(t) == 0:
     raise ValueError("No solution found!")
 
@@ -520,53 +512,3 @@ res = ("C7",) + res
 render_chords([res + res], "sample_branch_{}.mid", dur=dur, tempo=tempo)
 import sys
 sys.exit()
-raise ValueError()
-
-m = CMP(4, max_order=5, ptype="max", named_constraints={"start": ["C7"], "end": ["G7"]}, verbose=False)
-#t = m.branch(pairs[0][1], 8)
-raise ValueError("Complete")
-
-# greedy example
-r = []
-for n, p in enumerate(pairs):
-    print("Running greedy pair {} of {}".format(n, len(pairs)))
-    part = p[1][:max_order - 1]
-    ri = m.constrained_greedy(part, int(4 * rrange), random_state)
-    r.append(ri)
-
-
-# branch example
-r = []
-for n, p in enumerate(pairs):
-    print("Running branch pair {} of {}".format(n, len(pairs)))
-    part = p[1][:max_order - 1]
-
-    b = part
-    for i in range(rrange):
-        ri = m.branch(b[-(max_order - 1):], 4)
-        if len(ri) == 1:
-            break
-        part = ri[0][1]
-        b += part[-(max_order - 1):]
-    r.append(b)
-
-midi_p = []
-for ri in r:
-    rch = [realize_chord(rii, 3) for rii in ri]
-    rt = []
-    for rchi in rch:
-        rt.append([rchi[idx].midi for idx in range(len(rchi))])
-    midi_p.append(rt)
-
-# all half note
-midi_d = [[[dur for midi_ppii in midi_ppi] for midi_ppi in midi_pi] for midi_pi in midi_p]
-
-midi_p = [np.array(midi_pi) for midi_pi in midi_p]
-midi_d = [np.array(midi_di) for midi_di in midi_d]
-
-name_tag = "sample_branch_{}.mid"
-pitches_and_durations_to_pretty_midi(midi_p, midi_d,
-                                     save_dir="samples/samples",
-                                     name_tag=name_tag,
-                                     default_quarter_length=tempo,
-                                     voice_params="piano")
