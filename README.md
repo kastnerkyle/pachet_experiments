@@ -14,7 +14,7 @@ or
 
 Info
 ====
-This repo implements (parts of) several ideas from Sony CSL, led by Francois Pachet. See References for paper citations/links.
+This repo implements (parts of) several ideas from Sony CSL, led by Francois Pachet. See References for paper citations/links. Hear some example audio [at this link](https://badsamples.tumblr.com/post/164569290687/experiments-in-musical-textures-based-on-work).
 
 Exponential families is in a semi-modifiable form (see constants at the top of the file)
 but takes a while to run the first time.
