@@ -135,8 +135,7 @@ class CMP(object):
     F. Pachet, P. Roy
     https://www.csl.sony.fr/downloads/papers/2014/pachet-14a.pdf
     """
-    def __init__(self, order, max_order=None, ptype="max", named_constraints={},
-                 verbose=False):
+    def __init__(self, order, max_order=None, ptype="max", named_constraints={}):
 
         self.order = order
         self.goods = [Trie() for i in range(0, self.order)]
@@ -150,7 +149,6 @@ class CMP(object):
         self.bad = Trie()
         self.ptype = ptype
         assert ptype in ["fixed", "max", "avg"]
-        self.verbose = verbose
 
     def insert(self, list_of_items):
         if self.max_order is not None:
@@ -482,12 +480,16 @@ for p in pairs:
     final_pairs += [(p[0], ti_p) for ti_p in t_p]
 pairs = final_pairs
 
-random_state = np.random.RandomState(1999)
-rrange = 5
+# chord length
 dur = 2
+# synthesis tempo
 tempo = 110
+# number of examples considered, be careful as big numbers cause much larger runtime
+dataset_size = 12
+# history considered for likelihood scores
+order = 1
 
-m = CMP(1,
+m = CMP(order,
         max_order=None,
         ptype="fixed",
         named_constraints={"not_contains": ["C7"],
@@ -508,7 +510,7 @@ if len(t) == 0:
 
 res = t[0][1]
 res = ("C7",) + res
-# repeat 2x
+# repeat it 2x
 render_chords([res + res], "sample_branch_{}.mid", dur=dur, tempo=tempo)
 import sys
 sys.exit()

@@ -11,19 +11,24 @@ from datasets import pitches_and_durations_to_pretty_midi
 from datasets import quantized_to_pretty_midi
 from datasets import fetch_bach_chorales_music21
 
-mu = fetch_bach_chorales_music21()
-order = len(mu["list_of_data_pitch"][0])
-
-random_state = np.random.RandomState(1999)
-
+# key to use - changing to major may need different history lengths
 key = "minor"
+# tempo of output
 default_quarter_length = 70
+# what voice to synthesize with
 voice_type = "woodwinds"
 # history to consider
 split = 2
+# how long to generate
 clip_gen = 20
+
 # 0 Soprano, 1 Alto, 2 Tenor, 3 Bass
 which_voice = 0
+random_seed = 1999
+
+mu = fetch_bach_chorales_music21()
+order = len(mu["list_of_data_pitch"][0])
+random_state = np.random.RandomState(random_seed)
 
 lp = mu["list_of_data_pitch"]
 lt = mu["list_of_data_time"]
@@ -166,7 +171,7 @@ ret = t.continuate([("A", 1), ("B", 1)])
 # should be [("B", 1), ("B", 1), ("C", 1), ("D", 1)]
 '''
 
-random_state = np.random.RandomState(1999)
+random_state = np.random.RandomState(random_seed)
 t = Continuator(random_state)
 
 inds = range(len(lp))
