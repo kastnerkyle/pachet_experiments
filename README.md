@@ -14,6 +14,8 @@ or
 
 Info
 ====
+This repo implements (parts of) several ideas from Sony CSL, led by Francois Pachet. See References for paper citations/links.
+
 Exponential families is in a semi-modifiable form (see constants at the top of the file)
 but takes a while to run the first time.
 
@@ -21,9 +23,15 @@ Continuator experiment is easier to modify (constants near the top) but is not v
 
 Using the constraint experiments (steerable) will generate chord progressions, but needs more know-how to use. Here the modifications should happen at the bottom of the file.
 
+This is *not* meant to be easy to use on new data, or out-of-the box usable without knowledge of the papers.
+The goal was for me to understand a series of interesting works,
+and hopefully provide some code that could be read/hacked up by other motivated people to understand the core ideas in these papers.
 
-Constraints
-===========
+That said, feel free to fork and add whatever you want :D
+
+
+A Bit on the Constrained Markov Process
+=======================================
 An instance of a CMP object can be used by the .insert, and .branch methods. When creating these objects, one can specify the following:
 
 order to calculate likelihoods over
@@ -44,7 +52,6 @@ Finally when calling branch the two key arguments are the sequence to start from
 
 Constraints pt 2
 ================
-
 For example, this snippet approximates the setup from "Markov Constraints: Steerable Generation of Markov Sequences"
 
 ```
