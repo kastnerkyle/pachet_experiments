@@ -94,7 +94,7 @@ def music21_to_chord_duration(p):
 
 def music21_to_pitch_duration(p):
     """
-    Takes in a Music21 score, and outputs two numpy arrays and a list
+    Takes in a Music21 score, outputs 3 list of list
     One for pitch
     One for duration
     list for part times of each voice
@@ -713,7 +713,7 @@ def quantized_to_pretty_midi(quantized,
             qq = quantized[ss].T
         for i in range(voices):
             q = qq[i]
-            pitch_i = []
+            pitch_i = [0]
             dur_i = []
             cur = None
             count = 0
@@ -730,6 +730,8 @@ def quantized_to_pretty_midi(quantized,
                     count = 0
                 else:
                     count += 1
+            quarter_count = quantized_bin_size * (count + 1)
+            dur_i.append(quarter_count)
             pitches.append(pitch_i)
             durations.append(dur_i)
         all_pitches.append(pitches)
