@@ -62,11 +62,7 @@ def markov_transitions(sequences, order):
 
 def make_markov_corpus(sequences, order):
     # start = "<s>"
-    # default to 2 grams
-    # set order_upper and order_lower to the same value
-    # to only do 1 markov type
-    # range is inclusive
-    # internally add 1
+    # only do 1 markov type
     p_order = max(order - 1, 0)
     prior = markov_transitions(sequences, p_order)
     if p_order == 0:
@@ -78,7 +74,11 @@ def make_markov_corpus(sequences, order):
         tmp["<s>"] = {}
         for k in prior.keys():
             for vi, vv in prior[k].items():
-                tmp["<s>"][tuple(list(k) + [vi,])] = vv
+                tmp["<s>"][tuple(list(k) + [vi,])] = 0.
+        # dumb linear search to be sure the thing is correct
+        for seq in sequences:
+            for n_gram in zip(*(seq[i:] for i in range(order))):
+                tmp["<s>"][n_gram] += 1
         prior = normalize(tmp)
     d = {o: markov_transitions(sequences, o) for o in [order]}
     d[0] = prior
@@ -89,8 +89,8 @@ def make_constrained_markov(markovs, constraints):
     # Section 4.3 of https://www.ijcai.org/Proceedings/11/Papers/113.pdf
     # Finite-Length Markov Processes with Constraints
     # Pachet, Roy, Barbieri
-    # constraints is hard requirements for the sequence
-    # rules are transitions which should be disallowed
+    # constraints are hard requirements for the sequence
+    # dict rules are transitions which should be disallowed
     alphas = None
     orders = markovs.keys()
     # initialized the constrained markovs to the original matrices
@@ -115,7 +115,14 @@ def make_constrained_markov(markovs, constraints):
                             new_v[tuple([viik for viik in vik])] = viv
                         else:
                             new_v[vik] = viv
-                    tim = {dk: dv for dk, dv in constrained_markovs[index + 1][o][k].items() if k not in new_v.keys() or (k in new_v.keys() and dk not in new_v[k])}
+                    tim = {dk: dv for dk, dv in constrained_markovs[index + 1][o][k].items()}
+                    # partial match on keys for transition constraints... gonna end up being linear time I think
+                    for new_v_k in new_v.keys():
+                        if new_v_k == k[-len(new_v_k):]:
+                            for el in new_v[new_v_k]:
+                                # remove all constraint keys
+                                if el in tim:
+                                    del tim[el]
                     tt[k] = tim
                 constrained_markovs[index + 1][o] = copy.deepcopy(tt)
         else:
@@ -146,7 +153,6 @@ def make_constrained_markov(markovs, constraints):
 
 def generate_from_constrained_markov_process(constrained_markov_process, random_state, starting_seed=None, error_type="print"):
     # error_type can be "print" or "raise"
-   
     if starting_seed is None:
         out = []
         prefix = "<s>"
@@ -171,7 +177,7 @@ def generate_from_constrained_markov_process(constrained_markov_process, random_
         # get prefix
         prefix = tuple(out[-current_order:])
         if prefix not in constrained_markovs[current_order]:
-            msg = "WARNING: terminated early at index {}, consider looser constraints or larger corpus".format(index)
+            msg = "WARNING: terminated early at index {}, consider looser constraints, reduced order, and/or larger corpus".format(index)
             if error_type == "print":
                 print(msg)
             else:
@@ -190,21 +196,22 @@ if __name__ == "__main__":
     # constraints are listed PER STEP
     # rule constraints are list of list, e.g. [[prefix1, prefix2],[suffix]]
     # this one will match tutorial
+    order = 1
     # mc should exactly match end of 4.4
-    #c = [None, None, ["D"]]
+    c = [None, None, ["D"]]
     # this one checks hard unary constraints that *SHOULD* happen
     #c = [["E"], ["C"], ["C"], ["D"]]
-    # this one checks pairwise transitions that shouldn't happen?
+    # this one checks pairwise transitions that shouldn't happen
     #c = [None, None, {"E": ["D","C"], "C": ["D"]}]
-    # can mix them
+
+    # can also do higher order
+    #order = 2
+    #c = [None, None, ["E"]]
+    # binary constraints up to markov order
+    #c = [None, None, {("C", "D"): ["E"]}]
+    # can accept constraints that are shorter, for partial match
     #c = [None, None, {"E": ["E"]}]
-    # can also do higher order such as order = 2
-    c = [None, None, None, ["D"]]
-    # currently, binary constraints must match marokov order
-    # TODO: generalize this a bit to accept shorter transition constraints than order
-    #c = [None, None, {("E", "C"): ["D"]}]
     corpus = ["ECDECC", "CCEEDC"]
-    order = 2
     ms = make_markov_corpus(corpus, order)
     mc = make_constrained_markov(ms, c)
     import numpy as np
@@ -213,4 +220,5 @@ if __name__ == "__main__":
         print(generate_from_constrained_markov_process(mc, random_state))
         # can also seed the generation, thus bypassing the prior
         #print(generate_from_constrained_markov_process(mc, random_state, starting_seed=["C"]))
+        # also for higher order, seed with order length
         #print(generate_from_constrained_markov_process(mc, random_state, starting_seed=["E", "C"]))
