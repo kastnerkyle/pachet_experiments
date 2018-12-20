@@ -9,6 +9,7 @@ import nltk
 import pandas as pd
 import os
 import numpy as np
+from functools import partial
 
 NLTK_PACKAGES = ['punkt', 'word2vec_sample', 'cmudict']
 START_SYMBOL = '<s>'
@@ -205,54 +206,53 @@ def generate_from_constrained_markov_process(constrained_markov_process, random_
     return sequence
 
 
-class SuffixNode(object):
-    # borrowed from Gabriele Barbieri's code
-    def __init__(self, value=None):
-        self.value = value
-        self.exts = {}
+class Trie(object):
+    def __init__(self):
+        self.root = defaultdict()
+        self._end = "_end"
+        self.orders = []
 
-    def create_ext(self, value):
-        if value in self.exts:
-            return self.exts[value]
-        else:
-            ext = SuffixNode(value)
-            self.exts[value] = ext
-            return ext
+    def insert(self, list_of_items):
+        current = self.root
+        for item in list_of_items:
+            current = current.setdefault(item, {})
+        current.setdefault(self._end)
+        self.orders = sorted(list(set(self.orders + [len(list_of_items)])))
 
-    def parse_sub_sequence(self, sequence):
-        node = self
-        for element in sequence:
-            node = node.create_ext(element)
+    def order_insert(self, order, list_of_items):
+        s = 0
+        e = order
+        while e < len(list_of_items):
+            # + 1 due to numpy slicing
+            e = s + order + 1
+            self.insert(list_of_items[s:e])
+            s += 1
 
-    def parse(self, sequence):
-        for i, _ in enumerate(sequence):
-            self.parse_sub_sequence(sequence[i:])
+    def search(self, list_of_items):
+        # items of the list should be hashable
+        # returns True if item in Trie, else False
+        if len(list_of_items) not in self.orders:
+            raise ValueError("item {} has invalid length {} for search, only {} supported".format(list_of_items, len(list_of_items), self.orders))
+        current = self.root
+        for item in list_of_items:
+            if item not in current:
+                return False
+            current = current[item]
+        if self._end in current:
+            return True
+        return False
 
-    def get_order(self, sequence):
-        if not sequence:
-            return 0
-        node = self
-        i = 0
-        for i, e in enumerate(sequence):
-            if e in node.exts:
-                node = node.exts[e]
-            else:
-                return i
-        return i + 1
-
-    def get_all_orders(self, sequence):
-        return [self.get_order(sequence[i:]) for i, _ in enumerate(sequence)]
-
-    def get_max_order(self, sequence):
-        return max(self.get_all_orders(sequence))
-
-
-def get_suffix_tree(sequences):
-    tree = SuffixNode()
-    for seq in sequences:
-        tree.parse(seq)
-    return tree
-
+    def order_search(self, order, list_of_items):
+        # returns true if subsequence at offset is found
+        s = 0
+        e = order
+        searches = []
+        while e < len(list_of_items):
+            # + 1 due to numpy slicing
+            e = s + order + 1
+            searches.append(self.search(list_of_items[s:e]))
+            s += 1
+        return searches
 
 def test_markov_process():
     # constraints are listed PER STEP
@@ -260,13 +260,13 @@ def test_markov_process():
     # this one will match tutorial
     order = 1
     # mc should exactly match end of 4.4
-    #c = [None, None, None, ["D"]]
+    c = [None, None, None, ["D"]]
     # this one checks hard unary constraints that *SHOULD* happen
     # c = [["E"], ["C"], ["C"], ["D"]]
     # can have multiple unary constraints - output should be in this set
     #c = [["E", "C"], ["E", "C"], ["E", "C"], ["D"]]
     # this one checks pairwise transitions that shouldn't happen
-    c = [None, None, {("E",): ["D","C"], ("C",): ["D"]}, ["D"]]
+    #c = [None, None, {("E",): ["D","C"], ("C",): ["D"]}, ["D"]]
 
     # can also do higher order
     #order = 2
@@ -280,7 +280,6 @@ def test_markov_process():
     # turn it into words
     ms = make_markov_corpus(corpus, order)
     mc = make_constrained_markov(ms, c)
-    import numpy as np
     random_state = np.random.RandomState(100)
     for i in range(5):
         print(generate_from_constrained_markov_process(mc, random_state))
@@ -289,8 +288,7 @@ def test_markov_process():
         # also for higher order, seed with order length
         #print(generate_from_constrained_markov_process(mc, random_state, starting_seed=["E", "C"]))
 
-if __name__ == "__main__":
-    #test_markov_process()
+def test_dylan():
     sources = get_dylan_most_popular_songs(40)
     order = 2
     corpus = tokenize_corpus(sources)
@@ -312,4 +310,25 @@ if __name__ == "__main__":
     for i in range(10):
         #print(generate_from_constrained_markov_process(mc, random_state, starting_seed=["<s>"]))
         print(generate_from_constrained_markov_process(mc, random_state))
+
+if __name__ == "__main__":
+    #test_markov_process()
+    #test_dylan()
+    sources = get_dylan_most_popular_songs(40)
+    corpus = tokenize_corpus(sources)
+    checker = Trie()
+    max_order = 7
+    [checker.order_insert(max_order, c) for c in corpus]
+
+    order = 2
+    ms = make_markov_corpus(corpus, order)
+    length = 10
+    c = [["<s>"]] + [None] * (length + 1) + [["</s>"]]
+    mc = make_constrained_markov(ms, c)
+    random_state = np.random.RandomState(100)
+    generations = []
+    for i in range(100):
+        generations.append(generate_from_constrained_markov_process(mc, random_state))
+
+    passes = [checker.order_search(max_order, g) for g in generations]
     from IPython import embed; embed(); raise ValueError()
