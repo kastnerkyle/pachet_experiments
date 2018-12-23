@@ -10,6 +10,7 @@ import pandas as pd
 import os
 import numpy as np
 from functools import partial
+import string
 
 NLTK_PACKAGES = ['punkt', 'word2vec_sample', 'cmudict']
 START_SYMBOL = '<s>'
@@ -311,13 +312,13 @@ def test_dylan():
         #print(generate_from_constrained_markov_process(mc, random_state, starting_seed=["<s>"]))
         print(generate_from_constrained_markov_process(mc, random_state))
 
-if __name__ == "__main__":
-    #test_markov_process()
-    #test_dylan()
+def test_dylan_maxorder():
     sources = get_dylan_most_popular_songs(40)
     corpus = tokenize_corpus(sources)
+    corpus = [[ci for ci in c if ci not in [".", "'", ","]]
+               for c in corpus]
     checker = Trie()
-    max_order = 7
+    max_order = 5
     [checker.order_insert(max_order, c) for c in corpus]
 
     order = 2
@@ -327,8 +328,14 @@ if __name__ == "__main__":
     mc = make_constrained_markov(ms, c)
     random_state = np.random.RandomState(100)
     generations = []
-    for i in range(100):
+    for i in range(1000):
         generations.append(generate_from_constrained_markov_process(mc, random_state))
 
     passes = [checker.order_search(max_order, g) for g in generations]
-    from IPython import embed; embed(); raise ValueError()
+    passing_generations = [g for n, g in enumerate(generations) if not any(passes[n])]
+    print(passing_generations)
+
+if __name__ == "__main__":
+    #test_markov_process()
+    #test_dylan()
+    #test_dylan_maxorder()
